@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        table,
+table, th, td {
+  border: 1px solid black;
+  border-collapse: collapse;
+}
+
+tr:nth-child(even) {
+  background-color: rgba(150, 212, 212, 0.4);
+}
+
+th:nth-child(even),td:nth-child(even) {
+  background-color: rgba(150, 212, 212, 0.4);
+}
+    </style>
+    <title>Hack-A-Mole</title>
+    </script>
+    <script>
+
+    let add_player_socket = new WebSocket("wss://adversely-possible-emu.edgecompute.app/websocket?channel=addplayer");
+    add_player_socket.onmessage = function(event) {
+    	let message = event.data;
+    	if (message != "{}") {
+    		console.log(message);
+    		const obj = JSON.parse(message);
+    		let player = obj.player;
+    		let table = document.getElementById("myTable");
+    		let row = table.insertRow(table.rows.length);
+    		let cell1 = row.insertCell(0);
+    		let cell2 = row.insertCell(1);
+    		let cell3 = row.insertCell(2);
+
+			cell1.innerHTML = player;
+			cell2.id = player + "-score";
+			cell2.innerHTML = '0';
+            cell3.id = player + "-high_score";
+            cell3.innerHTML = '0';
+		}
+	}
+
+	let score_socket = new WebSocket("wss://adversely-possible-emu.edgecompute.app/websocket?channel=updatescore");
+    score_socket.onmessage = function(event) {
+    let message = event.data;
+    	if (message != "{}") {
+    		console.log(message);
+    		const obj = JSON.parse(message);
+			let player = obj.player;
+			let score = obj.score;
+			let score_cell = document.getElementById(player + "-score");
+            score_cell.innerHTML = score;
+            let high_score_cell = document.getElementById(player + "-high_score");
+            if (parseInt(score) > parseInt(high_score_cell.innerHTML)) {
+                high_score_cell.innerHTML = score;
+            }
+
+			sortTable();
+            }
+    }
+
+    window.onload = function() {
+        let table = document.getElementById("myTable");
+        let row, cell1, cell2, cell3;
+
+        {{ #each players }}
+        row = table.insertRow(table.rows.length);
+        cell1 = row.insertCell(0);
+        cell2 = row.insertCell(1);
+        cell3 = row.insertCell(2);
+
+        cell1.innerHTML = "{{ player }}";
+        cell2.id = "{{ player }}" + "-score";
+        cell2.innerHTML = "{{ score }}";
+        cell3.id = "{{ player }}" + "-high_score";
+        cell3.innerHTML = "{{ high_score }}";
+        {{ /each }}
+
+        sortTable();
+        }
+
+            function sortTable() {
+                var table, rows, switching, i, x, y, shouldSwitch;
+                table = document.getElementById("myTable");
+                switching = true;
+                /*Make a loop that will continue until
+                no switching has been done:*/
+                while (switching) {
+                    //start by saying: no switching is done:
+                    switching = false;
+                    rows = table.rows;
+                    /*Loop through all table rows (except the
+                    first, which contains table headers):*/
+                    for (i = 1; i < (rows.length - 1); i++) {
+                        //start by saying there should be no switching:
+                        shouldSwitch = false;
+                        /*Get the two elements you want to compare,
+                        one from current row and one from the next:*/
+                        x = rows[i].getElementsByTagName("TD")[1];
+                        y = rows[i + 1].getElementsByTagName("TD")[1];
+                        //check if the two rows should switch place:
+                        if (parseInt(x.innerHTML) < parseInt(y.innerHTML)) {
+                            //if so, mark as a switch and break the loop:
+                            shouldSwitch = true;
+                            break;
+                        }
+                    }
+                    if (shouldSwitch) {
+                        /*If a switch has been marked, make the switch
+                        and mark that a switch has been done:*/
+                        rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
+                        switching = true;
+                    }
+                }
+            }
+    </script>
+</head>
+<body>
+	<h1>Hack-A-Mole</h1>
+    <table id="myTable" style="width:100%">
+        <tr>
+            <th>Player</th>
+            <th>Score</th>
+            <th>High Score</th>
+        </tr>
+    </table>
+</body>
+</html>
+
