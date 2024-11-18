@@ -5,7 +5,8 @@ use fastly::KVStore;
 use handlebars::Handlebars;
 use serde_json::json;
 use std::collections::HashMap;
-use std::str;
+use std::{result, str};
+use fastly::http::request::SendError;
 
 const FANOUT_BACKEND: &str = "fanout_backend";
 const DEFAULT_CHANNEL: &str = "test";
@@ -46,21 +47,6 @@ fn handle_fanout_ws(mut req: Request, chan: &str) -> Response {
     resp
 }
 
-/*
-fn handle(req: Request) -> Result<Response, Error> {
-    let path = req.get_url().path();
-    println!("In handle: path={:?}", path);
-
-    match path {
-        "/" => Ok(handle_root(req)),
-        "/response" => Ok(handle_long_poll(req)),
-        "/stream" => Ok(handle_stream(req)),
-        "/sse" => Ok(handle_sse(req)),
-        "/ws" => Ok(handle_ws(req)),
-        _ => Ok(Response::from_status(StatusCode::NOT_FOUND).with_body("no such test resource\n")),
-    }
-}
-*/
 fn handle(req: Request, chan: &str) -> Response {
     match req.get_url().path() {
         "/long-poll" => fanout_util::grip_response("text/plain", "response", chan),
@@ -71,7 +57,7 @@ fn handle(req: Request, chan: &str) -> Response {
     }
 }
 
-fn fanout_publish(channel: &str, msg: &str) {
+fn fanout_publish(channel: &str, msg: &str) -> Result<Response, SendError> {
     let sid = std::env::var("FASTLY_SERVICE_ID").unwrap_or_else(|_| String::new());
     let secret = SecretStore::open(SECRET_NAME)
         .unwrap()
@@ -81,17 +67,14 @@ fn fanout_publish(channel: &str, msg: &str) {
     // I should use serde.
     let json_msg = format!("{{\"items\":[{{\"channel\":\"{}\",\"formats\":{{\"ws-message\":{{\"content\":\"{}\"}}}}}}]}}", channel, msg);
     let url = format!("https://api.fastly.com/service/{}/publish/", sid);
-    let mut fanout_resp = Request::post(url)
+    Request::post(url)
         .with_header("Fastly-Key", secret.plaintext().to_vec())
         .with_body(json_msg)
         .send(FANOUT_BACKEND)
-        .unwrap();
-    println!("Response from fanout: {:?}", fanout_resp.get_status());
-    println!("Response body: {}", fanout_resp.take_body().into_string());
 }
 
-fn add_name_to_kv(name: String) -> Response {
-    let store = KVStore::open("scoreboard").map(|store| store.expect("KVStore exists")).unwrap();
+fn add_name_to_kv(name: String) -> Result<Response, Error> {
+    let store = KVStore::open("scoreboard").map(|store| store.expect("KVStore exists"))?;
 
     let entry = store.lookup(&name);
     // If the entry already exists we want to return and error (no duplicates). If it returns and error
@@ -99,7 +82,7 @@ fn add_name_to_kv(name: String) -> Response {
     // JMR - one improvement would be to check the error to make sure it's 'ItemNotFound'
     match entry {
         // Stream the value back to the user-agent.
-        Ok(_entry) => Response::from_status(StatusCode::CONFLICT).with_body("Player already exists\n"),
+        Ok(_entry) => Ok(Response::from_status(StatusCode::CONFLICT).with_body("Player already exists\n")),
         Err(_e) => {
             let entry = HashMap::from([
                 ("player", name.to_owned()),
@@ -108,7 +91,7 @@ fn add_name_to_kv(name: String) -> Response {
             ]);
             let json = serde_json::to_string(&entry).unwrap();
             store.insert(&name, json).unwrap();
-            Response::from_status(StatusCode::OK)
+            Ok(Response::from_status(StatusCode::OK))
         },
     }
 }
@@ -119,23 +102,19 @@ fn adjust_score_in_kv(name: String, score: String) -> Result<Response, Error> {
     match entry {
         // Stream the value back to the user-agent.
         Some(entry) => {
-            // let body_str = entry.take_body_str().trim().to_string();
             let mut the_json: HashMap<String, String> = serde_json::from_str(entry.into_string().as_str())?;
-            println!("The JSON: {:?}", the_json);
 
             let score_int: i32 = score.parse().unwrap();
             let mut high_score: i32 = the_json.get("high_score").unwrap().parse().unwrap();
             high_score = if score_int > high_score { score_int } else { high_score };
-            println!("Score: {} High Score: {}", score_int, high_score);
-            // my_map.entry("a").and_modify(|k| *k += 10);
             the_json.entry("score".parse()?).and_modify(|k| *k = score_int.to_string());
             the_json.entry("high_score".parse()?).and_modify(|k| *k = high_score.to_string());
 
-            let json_str = serde_json::to_string(&the_json).unwrap();
-            println!("json str: {}", json_str);
-            let res = store.insert(&name, json_str).unwrap();
-            println!("insrt result {:?}", res);
-            Ok(Response::from_status(StatusCode::OK))
+            let json_str = serde_json::to_string(&the_json)?;
+            let res = store.insert(&name, json_str)?;
+            Ok(Response::from_status(StatusCode::OK)
+                .with_body(serde_json::to_string(&the_json)?)
+            )
         },
         None => Ok(Response::from_status(StatusCode::NOT_FOUND).with_body("Player not found\n")),
     }
@@ -187,10 +166,8 @@ fn main() -> Result<(), Error> {
                 let the_json: HashMap<String, String> = serde_json::from_str(&the_body).unwrap();
                 let name = the_json.get("player").unwrap();
                 let resp = add_name_to_kv(name.to_string());
-                println!("Kv resp: {:?}", resp);
                 let target_string = r#"{\"player\":\""#.to_owned() + name + r#"\"}"#;
-                fanout_publish("addplayer", &target_string);
-                // fanout_publish("test", &target_string);
+                fanout_publish("addplayer", &target_string).expect("Fanout Publish Failed.");
                 Ok(())
             },
             "/" => {
@@ -206,15 +183,17 @@ fn main() -> Result<(), Error> {
                     let player = the_json.get("player").unwrap();
                     let score = the_json.get("score").unwrap();
 
-                    adjust_score_in_kv(player.to_string(), score.to_string());
+                    let result: HashMap<String, String> = adjust_score_in_kv(player.to_string(), score.to_string())?.take_body_json()?;
+                    let high_score = result.get("high_score").unwrap();
 
                     let target_string = r#"{\"player\":\""#.to_owned()
                         + player
                         + r#"\", \"score\":\""#
                         + score
+                        + r#"\", \"high_score\":\""#
+                        + high_score
                         + r#"\"}"#;
-                    println!("Targ: {}", target_string);
-                    fanout_publish("updatescore", &target_string);
+                    fanout_publish("updatescore", &target_string).expect("Fanout Publish Failed.");
                     Ok(())
                 }
                 _ => {
@@ -237,8 +216,7 @@ fn main() -> Result<(), Error> {
                         + r#"\", \"score\":\""#
                         + score
                         + r#"\"}"#;
-                    println!("Targ: {}", target_string);
-                    fanout_publish("updatescore", &target_string);
+                    fanout_publish("updatescore", &target_string).expect("Fanout Publish Failed.");
                     Ok(())
                 }
                 _ => {
@@ -252,15 +230,12 @@ fn main() -> Result<(), Error> {
                 let mut players: Vec<HashMap<String, String>> = Vec::new();
                 let mut store = KVStore::open("scoreboard").map(|store| store.expect("KVStore exists"))?;
                 let player_list: Vec<String> = store.list()?.keys().to_owned();
-                println!("ListPage: {:?}", player_list);
                 for player in player_list {
                     let entry = store.lookup(&player)?.try_take_body().unwrap();
                     let mut the_json: HashMap<String, String> = serde_json::from_str(entry.into_string().as_str())?;
                     players.push(the_json);
-                    // println!("Body: {:?}", the_json);
                 }
-
-                // let json_str = serde_json::to_string(&players).unwrap();
+                
                 let raw_html = include_str!("tables2.html");
                 let reg = Handlebars::new();
                 // New handlebars
@@ -289,8 +264,6 @@ fn main() -> Result<(), Error> {
                         .with_header("Fastly-Key", secret.plaintext().to_vec())
                         .send(FANOUT_BACKEND).unwrap();
                 }
-                // let data = bereq.take_body_str();
-                // println!("Data: {}", data);
 
                 Ok(Response::from_status(StatusCode::OK)
                     .with_content_type(mime::TEXT_HTML_UTF_8)
@@ -310,23 +283,4 @@ fn main() -> Result<(), Error> {
             }
         }
     }
-
-    /*
-    // Request is a test request - from client, or from Fanout
-    if path.starts_with("/publish") {
-
-    } else if host.ends_with(".edgecompute.app") && path.starts_with("/test/") {
-        if req.get_header_str("Grip-Sig").is_some() {
-            // Request is from Fanout, handle it here
-            return Ok(handle_test(req, "test").send_to_client());
-        } else {
-            // Not from Fanout, route it through Fanout first
-            return Ok(req.handoff_fanout("self")?);
-        }
-    }
-
-    // Forward all non-test requests to the origin
-    Ok(req.handoff_fanout("origin")?)
-
-     */
 }

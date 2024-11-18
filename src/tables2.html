@@ -15,6 +15,11 @@ tr:nth-child(even) {
 th:nth-child(even),td:nth-child(even) {
   background-color: rgba(150, 212, 212, 0.4);
 }
+
+        td {
+            text-align: center;
+        }
+
     </style>
     <title>Hack-A-Mole</title>
     </script>
@@ -49,12 +54,17 @@ th:nth-child(even),td:nth-child(even) {
     		const obj = JSON.parse(message);
 			let player = obj.player;
 			let score = obj.score;
+            let high_score = obj.high_score;
 			let score_cell = document.getElementById(player + "-score");
             score_cell.innerHTML = score;
             let high_score_cell = document.getElementById(player + "-high_score");
+            high_score_cell.innerHTML = high_score;
+            /*
             if (parseInt(score) > parseInt(high_score_cell.innerHTML)) {
                 high_score_cell.innerHTML = score;
             }
+
+             */
 
 			sortTable();
             }
@@ -122,7 +132,7 @@ th:nth-child(even),td:nth-child(even) {
         <tr>
             <th>Player</th>
             <th>Score</th>
-            <th>High Score</th>
+            <th>Highest Score</th>
         </tr>
     </table>
 </body>
